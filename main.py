@@ -4,11 +4,8 @@ import sys
 import os
 import math
 import html
-import hashlib
 import yt_dlp
 import aiosqlite
-import aiohttp
-from bs4 import BeautifulSoup
 from datetime import datetime
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F, types
@@ -113,74 +110,80 @@ def safe_remove_file(filepath: str):
     except Exception as e: logger.error(f"Failed to remove file: {e}")
 
 # ==========================================
-# ПОИСК МУЗЫКИ (ИНТЕРНЕТ ПАРСИНГ)
+# ПОИСК МУЗЫКИ (SOUNDCLOUD)
 # ==========================================
 
-async def search_music_web(query: str):
-    """Ищет музыку напрямую в интернете, минуя блокировки YouTube"""
-    # Заменяем пробелы на + для URL
-    search_query = query.replace(' ', '+')
-    url = f"https://ru.hitmotop.com/search?q={search_query}"
+async def search_soundcloud(query: str):
+    """Ищет официальные треки в SoundCloud (обходит блокировки)"""
+    loop = asyncio.get_event_loop()
+    ydl_opts = {
+        'extract_flat': True,
+        'quiet': True,
+        'no_warnings': True,
+    }
     
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-    results = []
-    
-    try:
-        async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.get(url, timeout=10) as resp:
-                if resp.status != 200:
-                    return []
-                html_data = await resp.text()
-                
-        soup = BeautifulSoup(html_data, 'html.parser')
-        tracks = soup.find_all('li', class_='tracks__item')
-        
-        for track in tracks[:25]:  # Берем первые 25 результатов
-            title_elem = track.find('div', class_='track__title')
-            artist_elem = track.find('div', class_='track__desc')
-            time_elem = track.find('div', class_='track__fulltime')
-            dl_elem = track.find('a', class_='track__download-btn')
+    def _search():
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # scsearch15 - ищет 15 результатов на SoundCloud
+            return ydl.extract_info(f"scsearch15:{query}", download=False)
             
-            if title_elem and dl_elem and dl_elem.has_attr('href'):
-                title = title_elem.text.strip()
-                artist = artist_elem.text.strip() if artist_elem else "Unknown"
-                duration = time_elem.text.strip() if time_elem else ""
-                mp3_url = dl_elem['href']
-                
-                # Создаем уникальный ID из ссылки
-                track_id = hashlib.md5(mp3_url.encode()).hexdigest()
-                
-                results.append({
-                    'id': track_id,
-                    'url': mp3_url,
-                    'title': title,
-                    'artist': artist,
-                    'duration': duration
-                })
+    try:
+        info = await loop.run_in_executor(None, _search)
+        results = []
+        for entry in info.get('entries', []):
+            if not entry.get('url'): continue
+            
+            # Чистим название (иногда SC отдает "Артист - Название")
+            artist = entry.get('uploader', 'Unknown')
+            title = entry.get('title', 'Unknown')
+            if title.lower().startswith(f"{artist.lower()} - "):
+                title = title[len(artist)+3:]
+            elif title.lower().startswith(f"{artist.lower()} — "):
+                title = title[len(artist)+3:]
+            
+            # Форматируем длительность
+            dur = entry.get('duration')
+            dur_str = f"{int(dur)//60}:{int(dur)%60:02d}" if dur else ""
+            
+            results.append({
+                'id': entry.get('id', str(hash(entry['url']))),
+                'url': entry['url'],
+                'title': title,
+                'artist': artist,
+                'duration': dur_str
+            })
         return results
     except Exception as e:
-        logger.error(f"Web search error: {e}")
+        logger.error(f"SoundCloud Search Error: {e}")
         return []
 
-async def download_direct_mp3(url: str, filepath: str):
-    """Моментально скачивает готовый MP3 файл по прямой ссылке"""
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+async def download_soundcloud_track(track_url: str, track_id: str):
+    """Скачивает трек из SoundCloud напрямую"""
+    out_tmpl = os.path.join(DOWNLOAD_DIR, f"{track_id}")
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'outtmpl': out_tmpl + '.%(ext)s',
+        'ffmpeg_location': BASE_DIR,
+        'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'}],
+        'quiet': True, 'no_warnings': True, 'nocheckcertificate': True,
+        'source_address': '0.0.0.0',
+    }
+    
+    loop = asyncio.get_event_loop()
     try:
-        async with aiohttp.ClientSession(headers=headers) as session:
-            async with session.get(url, timeout=30) as resp:
-                if resp.status == 200:
-                    with open(filepath, 'wb') as f:
-                        while True:
-                            chunk = await resp.content.read(1024 * 1024)
-                            if not chunk: break
-                            f.write(chunk)
-                    return True
+        def _dl():
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                ydl.download([track_url])
+                
+        await loop.run_in_executor(None, _dl)
+        final_path = out_tmpl + ".mp3"
+        return final_path if os.path.exists(final_path) else None
     except Exception as e:
-        logger.error(f"Direct MP3 download error: {e}")
-    return False
+        logger.error(f"SoundCloud Download Error: {e}")
+        return None
 
 # ==========================================
-# СКАЧИВАНИЕ ВИДЕО (YT-DLP)
+# СКАЧИВАНИЕ ВИДЕО (Instagram, TikTok, YT)
 # ==========================================
 
 async def handle_video_url(message: types.Message, url: str):
@@ -211,7 +214,7 @@ async def handle_video_url(message: types.Message, url: str):
             file_path, title = await loop.run_in_executor(None, _dl_video)
             if file_path == 'TOO_LONG': return await msg.edit_text("❌ <b>Видео слишком длинное!</b>", parse_mode="HTML")
         except Exception:
-            await msg.edit_text("❌ <b>Ошибка скачивания видео (возможно, защита от ботов).</b>", parse_mode="HTML")
+            await msg.edit_text("❌ <b>Ошибка скачивания видео (возможно, защита или приватный профиль).</b>", parse_mode="HTML")
             safe_remove_file(f"{filename_base}.mp4")
             return
 
@@ -224,7 +227,7 @@ async def handle_video_url(message: types.Message, url: str):
                     await message.answer_video(video=FSInputFile(file_path), caption=f"🎬 <b>{safe_html(title)}</b>\n🤖 @{bot_username}", parse_mode="HTML")
                     await msg.delete()
             else: await msg.edit_text("❌ <b>Не удалось скачать видео.</b>", parse_mode="HTML")
-        except Exception: await msg.edit_text("❌ <b>Ошибка отправки.</b>", parse_mode="HTML")
+        except Exception: await msg.edit_text("❌ <b>Ошибка отправки файла в Telegram.</b>", parse_mode="HTML")
         finally: safe_remove_file(file_path)
 
 # ==========================================
@@ -257,12 +260,10 @@ def get_results_keyboard(results, page: int):
     end = start + ITEMS_PER_PAGE
     items = results[start:end]
     
-    # Передаем ИНДЕКС элемента в массиве, чтобы не превысить лимит байтов в callback_data
     for i, track in enumerate(items):
         actual_index = start + i
         dur_text = f" ({track.get('duration')})" if track.get('duration') else ""
         text = f"{track['artist']} — {track['title']}{dur_text}"
-        # cb data format: dl_index
         builder.button(text=text[:60] + ("..." if len(text) > 60 else ""), callback_data=f"dl_{actual_index}")
         
     builder.adjust(1)
@@ -287,7 +288,7 @@ async def start(message: types.Message):
     await register_user(message.from_user.id, message.from_user.username or "NoUsername")
     if not await check_subscription(message.from_user.id):
         return await message.answer("👋 <b>Привет!</b>\n\nЧтобы пользоваться ботом, подпишись на все каналы:", reply_markup=get_sub_keyboard(), parse_mode="HTML")
-    await message.answer("👋 <b>Music & Video Bot</b>\n\n🎵 <b>Для музыки:</b> Напиши название трека.\n🎬 <b>Для видео:</b> Отправь мне ссылку на YouTube/Instagram.\n\n🚀 <i>Жду твой запрос:</i>", parse_mode="HTML")
+    await message.answer("👋 <b>Music & Video Bot</b>\n\n🎵 <b>Для музыки:</b> Напиши название трека.\n🎬 <b>Для видео:</b> Отправь мне ссылку на YouTube/Instagram/TikTok.\n\n🚀 <i>Жду твой запрос:</i>", parse_mode="HTML")
 
 @dp.callback_query(F.data == "check_sub")
 async def check_sub_handler(cb: CallbackQuery):
@@ -309,17 +310,17 @@ async def query_handler(message: types.Message):
     if any(domain in text.lower() for domain in ['youtube.com', 'youtu.be', 'instagram.com', 'tiktok.com']) and ("http" in text):
         return await handle_video_url(message, text)
         
-    # Поиск официальной музыки через парсинг
+    # Поиск официальной музыки через SoundCloud
     uid = message.from_user.id
     msg = await message.answer(f"🔎 Ищу <b>«{safe_html(text)}»</b> в официальных базах...", parse_mode="HTML")
     
-    tracks = await search_music_web(text)
+    tracks = await search_soundcloud(text)
     
     if not tracks: 
         return await msg.edit_text(f"😔 По запросу «{safe_html(text)}» ничего не найдено. Попробуйте написать иначе.")
         
     USERS_DATA[uid] = {"query": text, "results": tracks, "page": 0}
-    await msg.edit_text(f"🎧 <b>Официальные треки:</b>", reply_markup=get_results_keyboard(tracks, 0), parse_mode="HTML")
+    await msg.edit_text(f"🎧 <b>Официальные треки (SoundCloud):</b>", reply_markup=get_results_keyboard(tracks, 0), parse_mode="HTML")
 
 @dp.callback_query(F.data.startswith("page_"))
 async def page_handler(cb: CallbackQuery):
@@ -352,7 +353,7 @@ async def download_handler(cb: CallbackQuery):
     artist = track['artist']
     mp3_url = track['url']
                 
-    # Проверка кеша БД (чтобы не качать заново, если кто-то уже скачал этот трек)
+    # Проверка кеша БД
     cached = await get_cached_track(track_id)
     if cached and cached[2]:
         await cb.message.answer_audio(cached[2], caption=f"🎧 {safe_html(artist)} — {safe_html(title)}\n🤖 @{bot_username}")
@@ -362,10 +363,9 @@ async def download_handler(cb: CallbackQuery):
     msg = await cb.message.answer("⚡ <b>Загрузка файла...</b>", parse_mode="HTML")
     
     async with download_semaphore:
-        file_path = os.path.join(DOWNLOAD_DIR, f"{track_id}.mp3")
-        success = await download_direct_mp3(mp3_url, file_path)
+        file_path = await download_soundcloud_track(mp3_url, track_id)
 
-    if success and os.path.exists(file_path):
+    if file_path and os.path.exists(file_path):
         await msg.edit_text("📤 Отправляю файл...")
         try:
             sent = await cb.message.answer_audio(FSInputFile(file_path), title=title, performer=artist, caption=f"🎧 {safe_html(artist)} — {safe_html(title)}\n🤖 @{bot_username}")
@@ -376,7 +376,6 @@ async def download_handler(cb: CallbackQuery):
         finally: safe_remove_file(file_path)
     else: 
         await msg.edit_text("❌ <b>Не удалось скачать трек. Попробуйте другой из списка.</b>", parse_mode="HTML")
-        safe_remove_file(file_path)
 
 # ==========================================
 # ЗАПУСК И ВЕБ-СЕРВЕР

@@ -13,7 +13,7 @@ from aiogram.filters import Command, CommandStart
 from aiogram.types import InlineKeyboardButton, FSInputFile, CallbackQuery
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.client.session.aiohttp import AiohttpSession
-from aiohttp import web  # Добавлено для веб-сервера
+from aiohttp import web
 from ytmusicapi import YTMusic
 from aiogram.exceptions import TelegramNetworkError
 from cachetools import TTLCache
@@ -57,8 +57,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 ytmusic = YTMusic()
+bot_username = ""  # Закешируем юзернейм бота для ускорения ответов
 
-# ИСПОЛЬЗУЕМ КЭШ С ТАЙМ-АУТОМ (1 час)
 USERS_DATA = TTLCache(maxsize=10000, ttl=3600)
 
 # ==========================================
@@ -168,10 +168,10 @@ async def download_track_local(video_id: str):
     ydl_opts = {
         'format': 'bestaudio/best', 'outtmpl': out_tmpl + '.%(ext)s', 'ffmpeg_location': BASE_DIR,
         'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'}],
-        'match_filter': lambda info, *_, **__: 'слишком длинное' if info.get('duration', 0) > MAX_DURATION else None,
+        'match_filter': lambda info, *_, **__: 'слишком длинное' if (info.get('duration') or 0) > MAX_DURATION else None,
+        'extractor_args': {'youtube': {'player_client': ['android']}},  # Обход ошибки 403 от YouTube
         'quiet': True, 'no_warnings': True, 'nocheckcertificate': True, 'geo_bypass': True,
         'source_address': '0.0.0.0', 'socket_timeout': 15, 'retries': 5, 'fragment_retries': 5,
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
     }
     if os.path.exists(COOKIES_FILE): ydl_opts['cookiefile'] = COOKIES_FILE
     loop = asyncio.get_event_loop()
@@ -198,15 +198,16 @@ async def handle_video_url(message: types.Message, url: str):
                 'format': 'best[height<=480][ext=mp4]/best[ext=mp4]/best', 'outtmpl': f'{filename_base}.%(ext)s',
                 'ffmpeg_location': BASE_DIR, 'merge_output_format': 'mp4', 'quiet': True, 'no_warnings': True, 
                 'nocheckcertificate': True, 'geo_bypass': True,
-                'match_filter': lambda info, *_, **__: 'слишком длинное' if info.get('duration', 0) > MAX_DURATION else None,
-                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+                'match_filter': lambda info, *_, **__: 'слишком длинное' if (info.get('duration') or 0) > MAX_DURATION else None,
+                'extractor_args': {'youtube': {'player_client': ['android']}},
             }
             if os.path.exists(COOKIES_FILE): ydl_opts['cookiefile'] = COOKIES_FILE
             def _dl_video():
                 try:
                     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                         info = ydl.extract_info(url, download=True)
-                        return f"{filename_base}.{info.get('ext', 'mp4')}", info.get('title', 'Video')
+                        # Всегда возвращаем .mp4, так как включен merge_output_format
+                        return f"{filename_base}.mp4", info.get('title', 'Video')
                 except yt_dlp.utils.DownloadError as e:
                     if 'слишком длинное' in str(e).lower(): return 'TOO_LONG', ''
                     raise e
@@ -224,7 +225,7 @@ async def handle_video_url(message: types.Message, url: str):
                 elif file_size_mb > 49.5: await msg.edit_text(f"❌ <b>Видео слишком большое ({file_size_mb:.1f} МБ)!</b> Лимит - 50 МБ.", parse_mode="HTML")
                 else:
                     await msg.edit_text("📤 <b>Отправляю видео в Telegram...</b>", parse_mode="HTML")
-                    await message.answer_video(video=FSInputFile(file_path), caption=f"🎬 <b>{safe_html(title)}</b>\n🤖 @{(await bot.get_me()).username}", parse_mode="HTML", request_timeout=300)
+                    await message.answer_video(video=FSInputFile(file_path), caption=f"🎬 <b>{safe_html(title)}</b>\n🤖 @{bot_username}", parse_mode="HTML", request_timeout=300)
                     await msg.delete()
             else: await msg.edit_text("❌ <b>Не удалось скачать видео.</b>", parse_mode="HTML")
         except Exception as e: await msg.edit_text("❌ <b>Ошибка отправки.</b> Сервер Telegram отклонил файл.", parse_mode="HTML")
@@ -363,7 +364,7 @@ async def download_handler(cb: CallbackQuery):
     if search_mode == "songs":
         cached = await get_cached_track(video_id)
         if cached and cached[2]:
-            await cb.message.answer_audio(cached[2], caption=f"🎧 {safe_html(cached[1] or artist)} — {safe_html(cached[0] or title)}\n🤖 @{(await bot.get_me()).username}")
+            await cb.message.answer_audio(cached[2], caption=f"🎧 {safe_html(cached[1] or artist)} — {safe_html(cached[0] or title)}\n🤖 @{bot_username}")
             await log_download(uid, cached[0] or title, cached[1] or artist)
             return
 
@@ -377,7 +378,7 @@ async def download_handler(cb: CallbackQuery):
     if file_path and os.path.exists(file_path):
         await msg.edit_text("📤 Отправляю файл...")
         try:
-            sent = await cb.message.answer_audio(FSInputFile(file_path), title=title, performer=artist, caption=f"🎧 {safe_html(artist)} — {safe_html(title)}\n🤖 @{(await bot.get_me()).username}")
+            sent = await cb.message.answer_audio(FSInputFile(file_path), title=title, performer=artist, caption=f"🎧 {safe_html(artist)} — {safe_html(title)}\n🤖 @{bot_username}")
             if search_mode == "songs": await cache_track(video_id, title, artist, sent.audio.file_id)
             await log_download(uid, title, artist)
             await msg.delete()
@@ -404,14 +405,18 @@ async def dummy_web_server():
     print(f"🌐 Веб-сервер запущен на порту {port} для пинга мониторинга")
 
 async def main():
+    global bot_username
     await init_db()
+    
+    bot_info = await bot.get_me()
+    bot_username = bot_info.username
     
     # Запускаем наш мини-сервер как фоновую задачу
     asyncio.create_task(dummy_web_server())
     
     try:
         await bot.delete_webhook(drop_pending_updates=True)
-        print(f"✅ БОТ ЗАПУЩЕН | Admin: {ADMIN_ID}")
+        print(f"✅ БОТ ЗАПУЩЕН | Admin: {ADMIN_ID} | Username: @{bot_username}")
         await dp.start_polling(bot)
     except TelegramNetworkError:
         print("\n❌ ОШИБКА: НЕТ ПОДКЛЮЧЕНИЯ К СЕРВЕРАМ TELEGRAM ❌\nВключите VPN или прокси.\n")

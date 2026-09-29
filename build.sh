@@ -10,4 +10,5 @@ wget https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.x
 tar -xf ffmpeg-release-amd64-static.tar.xz
 mv ffmpeg-*-amd64-static/ffmpeg .
 mv ffmpeg-*-amd64-static/ffprobe .
+chmod +x ffmpeg ffprobe
 rm -rf ffmpeg-*-amd64-static*

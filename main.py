@@ -28,9 +28,7 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 
 REQUIRED_CHANNELS = [
-    {"id": "@xSp1der42", "url": "https://t.me/xSp1der42", "name": "🕷 Канал xSp1der42"},
-    {"id": "@RiffyOff", "url": "https://t.me/RiffyOff", "name": "🎸 Канал RiffyOff"},
-    {"id": "@neon9_news", "url": "https://t.me/neon9_news", "name": "📰 Канал Neon9 News"}
+    {"id": "@xSp1der42", "url": "https://t.me/xSp1der42", "name": "🕷 Канал xSp1der42"}
 ]
 
 DB_NAME = "music_db.sqlite"
@@ -287,7 +285,7 @@ async def ignore_handler(cb: CallbackQuery):
 async def start(message: types.Message):
     await register_user(message.from_user.id, message.from_user.username or "NoUsername")
     if not await check_subscription(message.from_user.id):
-        return await message.answer("👋 <b>Привет!</b>\n\nЧтобы пользоваться ботом, подпишись на все каналы:", reply_markup=get_sub_keyboard(), parse_mode="HTML")
+        return await message.answer("👋 <b>Привет!</b>\n\nЧтобы пользоваться ботом, подпишись на канал:", reply_markup=get_sub_keyboard(), parse_mode="HTML")
     await message.answer("👋 <b>Music & Video Bot</b>\n\n🎵 <b>Для музыки:</b> Напиши название трека.\n🎬 <b>Для видео:</b> Отправь мне ссылку на YouTube/Instagram/TikTok.\n\n🚀 <i>Жду твой запрос:</i>", parse_mode="HTML")
 
 @dp.callback_query(F.data == "check_sub")
@@ -296,13 +294,13 @@ async def check_sub_handler(cb: CallbackQuery):
         await cb.answer("✅ Подписка подтверждена!")
         await cb.message.delete()
         await cb.message.answer("✅ <b>Ок!</b> Пиши название песни или кидай ссылку:", parse_mode="HTML")
-    else: await cb.answer("❌ Вы не подписаны на все каналы!", show_alert=True)
+    else: await cb.answer("❌ Вы не подписаны на канал!", show_alert=True)
 
 @dp.message(F.text)
 async def query_handler(message: types.Message):
     await register_user(message.from_user.id, message.from_user.username)
     if not await check_subscription(message.from_user.id):
-        return await message.answer("🛑 Подпишись на все каналы!", reply_markup=get_sub_keyboard())
+        return await message.answer("🛑 Подпишись на канал!", reply_markup=get_sub_keyboard())
         
     text = message.text.strip()
     
@@ -334,7 +332,7 @@ async def page_handler(cb: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("dl_"))
 async def download_handler(cb: CallbackQuery):
-    if not await check_subscription(cb.from_user.id): return await cb.answer("❌ Подпишись на все каналы!", show_alert=True)
+    if not await check_subscription(cb.from_user.id): return await cb.answer("❌ Подпишись на канал!", show_alert=True)
     
     uid = cb.from_user.id
     if uid not in USERS_DATA or "results" not in USERS_DATA[uid]:
